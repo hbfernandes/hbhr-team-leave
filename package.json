@@ -1,0 +1,35 @@
+{
+  "name": "hbhr-team-leave",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "tsc --noEmit && vite build",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:e2e": "npm run build && playwright test",
+    "check": "npm run typecheck && npm test && npm run build",
+    "package": "npm run build && node scripts/package.mjs",
+    "store:assets": "node scripts/store-assets.mjs --graphics && npm run build && node scripts/store-assets.mjs --screenshots"
+  },
+  "dependencies": {
+    "react": "^19.2.0",
+    "react-dom": "^19.2.0"
+  },
+  "devDependencies": {
+    "@axe-core/playwright": "^4.10.0",
+    "@playwright/test": "^1.56.0",
+    "@testing-library/jest-dom": "^6.9.0",
+    "@testing-library/react": "^16.3.0",
+    "@testing-library/user-event": "^14.6.0",
+    "@types/chrome": "^0.1.0",
+    "@types/node": "^22.0.0",
+    "@types/react": "^19.2.0",
+    "@types/react-dom": "^19.2.0",
+    "fflate": "^0.8.2",
+    "jsdom": "^26.1.0",
+    "typescript": "^5.9.0",
+    "vite": "^6.4.0",
+    "vitest": "^4.1.11"
+  }
+}
