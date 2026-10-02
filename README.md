@@ -9,5 +9,6 @@ Uses your existing session and permissions. Read-only: no HR writes or backend s
 - [Documentation index](docs/index.md) — Architecture, reference and decisions.
 - [Installation and verification](docs/runbooks/installation.md) — Unpacked installation, unlisted store distribution and updates.
 - [Builds and versioning](docs/runbooks/builds.md) — Development checks, packaging and CI.
+- [Privacy notice](https://hbfernandes.github.io/hbhr-team-leave/store-assets/privacy.html) — Data handling, local storage and sharing.
 
 Not affiliated with or endorsed by HealthBoxHR.

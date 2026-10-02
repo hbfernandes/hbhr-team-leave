@@ -22,6 +22,7 @@ jobs:
           node-version: '22'
           cache: npm
       - run: npm ci
+      - run: node --test tests/release.test.mjs
       - name: Verify release metadata
         run: node scripts/check-version.mjs
       - run: npm run check

@@ -61,7 +61,7 @@ Automatic scope is `hbhr:user:<id>` from a unique verified current-user signal i
 - Partial-day hours, staffing capacity, work schedules and regional holiday eligibility are not inferred. Weekend hiding is not implemented.
 - No verified organization ID. A server-side account switch that does not change the page is undetectable; reload after changing accounts. Use different manual labels for different accounts.
 - Known pagination markers are checked; undocumented directory/layout changes may require maintenance.
-- No auto-version increment, tag, GitHub Release or Web Store API publishing. CI checks version equality/format, not increases relative to previous store uploads.
+- The build workflow does not publish releases or change versions. The manually triggered release workflow tags the current three-part version, publishes a versioned GitHub Release ZIP and then commits the next patch version to `main`. No Web Store API publishing; version checks do not compare against previous store uploads. Repository policy must permit release tags and the bot's direct version commit.
 - Public privacy-policy hosting, listing approval and safe reviewer account access are external owner/admin tasks; repository assets do not establish publication status.
 
 # Validation
@@ -77,4 +77,5 @@ Automated fixtures do not certify current live HBHR behavior or imply Chrome Web
 - [Runtime architecture](../architecture/extension.md) links the implementing files.
 - [Tests](../../tests/Widget.test.tsx), [adapter tests](../../tests/adapter.test.ts), [storage tests](../../tests/storage.test.ts), [domain tests](../../tests/domain.test.ts), [asset tests](../../tests/store-assets.test.ts) and [browser tests](../../tests/e2e/extension.spec.ts) provide executable evidence.
 - [Build workflow](../../.github/workflows/build.yml) and [version check](../../scripts/check-version.mjs) define delivered build automation.
+- [Release workflow](../../.github/workflows/release.yml), [patch updater](../../scripts/bump-patch.mjs) and [release-script tests](../../tests/release.test.mjs) define manual GitHub publishing and next-version preparation.
 - HBHR itself remains authoritative for employee records and leave approvals.

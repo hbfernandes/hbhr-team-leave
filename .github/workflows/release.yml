@@ -1,0 +1,87 @@
+name: Release
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: extension-release
+  cancel-in-progress: false
+
+jobs:
+  release:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+      - run: npm ci
+      - name: Check release version and availability
+        id: version
+        run: |
+          node scripts/check-version.mjs
+          next=$(node scripts/bump-patch.mjs --check)
+          version=$(node -p "JSON.parse(require('fs').readFileSync('public/manifest.json')).version")
+          tag="v${version}"
+          existing=$(git ls-remote --tags origin "refs/tags/${tag}")
+          if [[ -n "$existing" ]]; then
+            echo "Tag ${tag} already exists; refusing duplicate release."
+            exit 1
+          fi
+          echo "version=${version}" >> "$GITHUB_OUTPUT"
+          echo "next=${next}" >> "$GITHUB_OUTPUT"
+          echo "tag=${tag}" >> "$GITHUB_OUTPUT"
+      - run: node --test tests/release.test.mjs
+      - run: npm run check
+      - name: Install test browser
+        run: npx playwright install --with-deps chromium
+      - run: npm run test:e2e
+      - name: Package versioned store ZIP
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          npm run package
+          mv artifacts/hbhr-team-leave.zip "artifacts/hbhr-team-leave-${VERSION}.zip"
+          unzip -l "artifacts/hbhr-team-leave-${VERSION}.zip"
+      - name: Publish GitHub release
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+          TAG: ${{ steps.version.outputs.tag }}
+        run: |
+          git fetch origin main
+          test "$(git rev-parse HEAD)" = "$(git rev-parse origin/main)"
+          git tag "$TAG"
+          git push origin "refs/tags/${TAG}"
+          gh release create "$TAG" "artifacts/hbhr-team-leave-${VERSION}.zip" \
+            --verify-tag --title "HBHR Team Leave ${VERSION}" --generate-notes
+      - name: Commit next development patch
+        env:
+          NEXT: ${{ steps.version.outputs.next }}
+        run: |
+          node scripts/bump-patch.mjs
+          node scripts/check-version.mjs
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add public/manifest.json package.json package-lock.json
+          git commit -m "chore: prepare version ${NEXT}"
+          git push origin HEAD:main
+      - name: Save browser test report
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-playwright-report
+          path: |
+            playwright-report/
+            test-results/
+          if-no-files-found: ignore
+          retention-days: 7

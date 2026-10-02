@@ -34,7 +34,7 @@ Shadow DOM isolates styling, not information from the host page. Native main-con
 
 # Dependencies
 
-React/ReactDOM, TypeScript and Vite produce a bundled IIFE. Vitest/Testing Library and Playwright test with synthetic data. GitHub Actions produces tested ZIP artifacts only; store publication and version changes are manual. See [build runbook](../runbooks/builds.md).
+React/ReactDOM, TypeScript and Vite produce a bundled IIFE. Vitest/Testing Library and Playwright test with synthetic data. The build workflow produces tested ZIP artifacts. A separate manually triggered release workflow publishes a tagged GitHub Release with a versioned store-ready ZIP, then commits the next patch version. Chrome Web Store publication remains manual. See [build runbook](../runbooks/builds.md).
 
 # Trade-offs
 
