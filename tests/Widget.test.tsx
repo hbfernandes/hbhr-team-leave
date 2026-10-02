@@ -121,6 +121,25 @@ describe('Widget', () => {
     expect(mocks.fetchCalendar).not.toHaveBeenCalled();
   });
 
+  it('marks today across header, members and summary only in the current month', async () => {
+    const user = userEvent.setup();
+    const today = new Date().toISOString().slice(0, 10);
+    setupMocks(workspaceWithGroup());
+    render(<Widget scope={scope} />);
+    const header = await screen.findByRole('columnheader', { name: new RegExp(`^${today}`) });
+    expect(header).toHaveAttribute('aria-current', 'date');
+    expect(header).toHaveClass('is-today');
+    const grid = screen.getByRole('grid');
+    expect(grid.querySelectorAll('.is-today')).toHaveLength(4);
+    for (const cell of grid.querySelectorAll('.is-today')) {
+      expect(cell.getAttribute('aria-label')).toContain(today);
+    }
+    await user.click(screen.getByRole('button', { name: 'Next month' }));
+    await waitFor(() => expect(screen.getByRole('grid').querySelectorAll('.is-today')).toHaveLength(0));
+    await user.click(screen.getByRole('button', { name: 'Today' }));
+    expect(await screen.findByRole('columnheader', { name: new RegExp(`^${today}`) })).toHaveClass('is-today');
+  });
+
   it('searches employee names only while retaining separate metadata filters', async () => {
     const user = userEvent.setup();
     render(<Widget scope={scope} />);

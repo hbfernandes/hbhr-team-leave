@@ -649,3 +649,29 @@ test('passes axe for extension UI while excluding minimal host-native fixture', 
   const results = await new AxeBuilder({ page }).exclude('#native-host-fixture').analyze();
   expect(results.violations).toEqual([]);
 });
+
+test('outlines the whole current-day column in light and dark themes', async ({ page }) => {
+  await installFixtures(page);
+  await openHome(page);
+  await createTeam(page);
+  const root = widget(page);
+  const today = new Date().toISOString().slice(0, 10);
+  const header = root.getByRole('columnheader', { name: new RegExp(`^${today}`) });
+  await expect(header).toHaveAttribute('aria-current', 'date');
+  const highlighted = root.locator('.timeline .is-today');
+  await expect(highlighted).toHaveCount(4);
+  for (const cell of await highlighted.all()) {
+    const borders = await cell.evaluate(e => {
+      const style = getComputedStyle(e, '::after');
+      return { left: style.borderLeftWidth, right: style.borderRightWidth, pointer: style.pointerEvents };
+    });
+    expect(borders).toEqual({ left: '3px', right: '3px', pointer: 'none' });
+  }
+  expect(await header.evaluate(e => getComputedStyle(e, '::after').borderTopWidth)).toBe('3px');
+  const summary = root.locator('.timeline__summary-cell.is-today');
+  expect(await summary.evaluate(e => getComputedStyle(e, '::after').borderBottomWidth)).toBe('3px');
+  await page.evaluate(() => document.body.setAttribute('data-layout-mode', 'dark'));
+  await expect.poll(() => header.evaluate(e => getComputedStyle(e, '::after').borderLeftColor)).toBe('rgb(251, 191, 36)');
+  await root.getByRole('button', { name: 'Next month' }).click();
+  await expect(highlighted).toHaveCount(0);
+});

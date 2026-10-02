@@ -517,6 +517,29 @@ button:disabled {
   background: var(--hbhr-accent);
 }
 
+.timeline .is-today::after {
+  border-left: 3px solid #d99a21;
+  border-right: 3px solid #d99a21;
+  content: '';
+  inset: -1px 0 0;
+  pointer-events: none;
+  position: absolute;
+  z-index: 1;
+}
+
+.timeline__day-header.is-today::after {
+  border-top: 3px solid #d99a21;
+  top: 0;
+}
+
+.timeline__summary-cell.is-today::after {
+  border-bottom: 3px solid #d99a21;
+}
+
+:host([data-theme="dark"]) .timeline .is-today::after {
+  border-color: #fbbf24;
+}
+
 .leave-block {
   align-items: center;
   border-radius: 4px;

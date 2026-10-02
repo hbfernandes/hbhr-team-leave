@@ -664,6 +664,7 @@ export function Widget({ scope }: { scope: string }): ReactElement {
     return count >= workspace.preferences.threshold;
   });
   const timelineStyle = { '--day-count': days.length } as CSSProperties;
+  const today = new Date().toISOString().slice(0, 10);
 
   function memberName(memberId: string): string {
     return employeeById.get(memberId)?.name ?? `Unknown employee (${memberId})`;
@@ -695,7 +696,8 @@ export function Widget({ scope }: { scope: string }): ReactElement {
               return (
                 <div
                   aria-label={`${date}${holidays.length ? `, holiday: ${holidays.join(', ')}` : ''}`}
-                  className={`timeline__day-header${weekday === 0 || weekday === 6 ? ' is-weekend' : ''}${holidays.length ? ' is-holiday' : ''}`}
+                  aria-current={date === today ? 'date' : undefined}
+                  className={`timeline__day-header${weekday === 0 || weekday === 6 ? ' is-weekend' : ''}${holidays.length ? ' is-holiday' : ''}${date === today ? ' is-today' : ''}`}
                   key={date}
                   role="columnheader"
                   title={holidays.join(', ')}
@@ -721,7 +723,7 @@ export function Widget({ scope }: { scope: string }): ReactElement {
                   return (
                     <div
                       aria-label={`${name}, ${date}: ${leave ? leave.status : 'available'}`}
-                      className={`timeline__cell${weekday === 0 || weekday === 6 ? ' is-weekend' : ''}${holidayByDate.has(date) ? ' is-holiday' : ''}`}
+                      className={`timeline__cell${weekday === 0 || weekday === 6 ? ' is-weekend' : ''}${holidayByDate.has(date) ? ' is-holiday' : ''}${date === today ? ' is-today' : ''}`}
                       key={`${memberId}-${date}`}
                       role="gridcell"
                       title={leave?.label || undefined}
@@ -757,7 +759,7 @@ export function Widget({ scope }: { scope: string }): ReactElement {
               return (
                 <div
                   aria-label={`${date}: ${approved} confirmed, ${pending} pending${holiday ? `, public holiday: ${holiday.join(', ')}` : ''}`}
-                  className={`timeline__summary-cell${weekday === 0 || weekday === 6 ? ' is-weekend' : ''}${holiday ? ' is-holiday' : ''}`}
+                  className={`timeline__summary-cell${weekday === 0 || weekday === 6 ? ' is-weekend' : ''}${holiday ? ' is-holiday' : ''}${date === today ? ' is-today' : ''}`}
                   key={`summary-${date}`}
                   role="gridcell"
                   title={summaryDescription}
