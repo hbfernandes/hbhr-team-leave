@@ -4,6 +4,9 @@ okf_version: "0.2"
 
 # HBHR Team Leave
 
-- [Installation and verification](installation.md) — Install the Chrome extension and verify it safely.
-- [Implementation reference](implementation.md) — Implemented behaviour, validation and known limitations.
-- [Unlisted Chrome Web Store publication](store-publication.md) — Prepare store assets, privacy disclosures and safe reviewer access for unlisted distribution.
+- [Architecture](architecture/index.md) — Runtime boundaries, components and data ownership.
+- [Reference](reference/index.md) — Current behavior, contracts, limits and validation evidence.
+- [Runbooks](runbooks/index.md) — Installation, builds, versioning and manual store publication.
+- [Decisions](decisions/index.md) — Architectural choices, alternatives and consequences.
+
+This bundle describes current delivered behavior and the decisions behind it.

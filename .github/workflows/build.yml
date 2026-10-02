@@ -1,0 +1,47 @@
+name: Build and test
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+      - run: npm ci
+      - name: Verify release metadata
+        run: node scripts/check-version.mjs
+      - run: npm run check
+      - name: Install test browser
+        run: npx playwright install --with-deps chromium
+      - run: npm run test:e2e
+      - run: npm run package
+      - name: Save tested extension ZIP
+        uses: actions/upload-artifact@v4
+        with:
+          name: hbhr-team-leave-package
+          path: artifacts/hbhr-team-leave.zip
+          if-no-files-found: error
+          retention-days: 14
+      - name: Save browser test report
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-report
+          path: |
+            playwright-report/
+            test-results/
+          retention-days: 7
