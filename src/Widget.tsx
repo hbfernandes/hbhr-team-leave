@@ -24,9 +24,10 @@ import {
 import { fetchCalendar, fetchDirectory } from './adapter';
 import {
   exportGroups,
-  loadWorkspace,
+  inspectWorkspace,
   mergeGroups,
   parseImport,
+  recoverLegacyWorkspace,
   saveWorkspace,
   subscribeWorkspace,
 } from './storage';
@@ -176,9 +177,11 @@ function WidgetDialog({
   );
 }
 
-export function Widget({ scope }: { scope: string }): ReactElement {
+export function Widget({ scope, legacyScope }: { scope: string; legacyScope?: string }): ReactElement {
   const [workspace, setWorkspace] = useState<Workspace>(() => defaultWorkspace());
   const [workspaceReady, setWorkspaceReady] = useState(false);
+  const [legacyRecoveryAvailable, setLegacyRecoveryAvailable] = useState(false);
+  const [recoveryBusy, setRecoveryBusy] = useState(false);
   const [workspaceScope, setWorkspaceScope] = useState('');
   const [storageError, setStorageError] = useState('');
   const [employees, setEmployees] = useState<Employee[]>([]);
@@ -233,6 +236,8 @@ export function Widget({ scope }: { scope: string }): ReactElement {
   useEffect(() => {
     let active = true;
     setWorkspaceReady(false);
+    setLegacyRecoveryAvailable(false);
+    setRecoveryBusy(false);
     setWorkspaceScope('');
     setWorkspace(defaultWorkspace());
     setEmployees([]);
@@ -260,14 +265,47 @@ export function Widget({ scope }: { scope: string }): ReactElement {
       }
     }
 
-    void loadWorkspace(scope)
-      .then((loadedWorkspace) => {
+    void inspectWorkspace(scope)
+      .then(async (inspection) => {
         if (!active) {
           return;
         }
-        setWorkspace(loadedWorkspace);
-        setThresholdInput(String(loadedWorkspace.preferences.threshold));
+        if (inspection.status === 'valid') {
+          setWorkspace(inspection.workspace);
+          setThresholdInput(String(inspection.workspace.preferences.threshold));
+          setWorkspaceScope(scope);
+          setWorkspaceReady(true);
+          return;
+        }
+        if (inspection.status === 'invalid') {
+          setWorkspace(defaultWorkspace());
+          setThresholdInput('3');
+          setWorkspaceScope(scope);
+          setStorageError('Saved workspace data was invalid. No saved teams were loaded.');
+          setWorkspaceReady(true);
+          return;
+        }
+        if (!legacyScope) {
+          setWorkspace(defaultWorkspace());
+          setThresholdInput('3');
+          setWorkspaceScope(scope);
+          setWorkspaceReady(true);
+          return;
+        }
+        const legacyInspection = await inspectWorkspace(legacyScope);
+        if (!active) {
+          return;
+        }
+        if (legacyInspection.status === 'valid') {
+          setLegacyRecoveryAvailable(true);
+          return;
+        }
+        setWorkspace(defaultWorkspace());
+        setThresholdInput('3');
         setWorkspaceScope(scope);
+        if (legacyInspection.status === 'invalid') {
+          setStorageError('A previous workspace could not be recovered because its saved data is invalid. The original entry was kept.');
+        }
         setWorkspaceReady(true);
       })
       .catch((error: unknown) => {
@@ -285,7 +323,60 @@ export function Widget({ scope }: { scope: string }): ReactElement {
       active = false;
       unsubscribe();
     };
-  }, [scope]);
+  }, [legacyScope, scope]);
+
+  async function handleLegacyRecovery(accept: boolean): Promise<void> {
+    if (!legacyScope || recoveryBusy) {
+      return;
+    }
+    if (!accept) {
+      setLegacyRecoveryAvailable(false);
+      setWorkspace(defaultWorkspace());
+      setThresholdInput('3');
+      setWorkspaceScope(scope);
+      setWorkspaceReady(true);
+      return;
+    }
+
+    setRecoveryBusy(true);
+    setStorageError('');
+    try {
+      const result = await recoverLegacyWorkspace(scope, legacyScope, true);
+      if (result.status === 'recovered' || result.status === 'destination-exists') {
+        setWorkspace(result.workspace);
+        setThresholdInput(String(result.workspace.preferences.threshold));
+        setWorkspaceScope(scope);
+        setLegacyRecoveryAvailable(false);
+        setWorkspaceReady(true);
+      } else if (result.status === 'source-invalid') {
+        setStorageError('The previous workspace was invalid and could not be recovered. The original entry was kept.');
+        setLegacyRecoveryAvailable(false);
+        setWorkspace(defaultWorkspace());
+        setWorkspaceScope(scope);
+        setWorkspaceReady(true);
+      } else if (result.status === 'destination-invalid') {
+        setStorageError('The verified workspace destination is invalid. No legacy data was copied.');
+        setLegacyRecoveryAvailable(false);
+        setWorkspace(defaultWorkspace());
+        setWorkspaceScope(scope);
+        setWorkspaceReady(true);
+      } else {
+        setStorageError('The previous workspace is no longer available. The original entry was kept.');
+        setLegacyRecoveryAvailable(false);
+        setWorkspace(defaultWorkspace());
+        setWorkspaceScope(scope);
+        setWorkspaceReady(true);
+      }
+    } catch (error) {
+      setStorageError(`Could not recover the previous workspace: ${errorMessage(error, 'storage error')} The original entry was kept.`);
+      setLegacyRecoveryAvailable(false);
+      setWorkspace(defaultWorkspace());
+      setWorkspaceScope(scope);
+      setWorkspaceReady(true);
+    } finally {
+      setRecoveryBusy(false);
+    }
+  }
 
   useEffect(() => {
     const requestId = ++directoryRequestId.current;
@@ -1046,7 +1137,20 @@ export function Widget({ scope }: { scope: string }): ReactElement {
 
       {!workspace.preferences.collapsed && (
         <div id="team-leave-body">
-          <div className="widget-toolbar">
+          {legacyRecoveryAvailable && (
+            <section aria-label="Legacy workspace recovery" className="empty-state recovery-state" role="status">
+              <span aria-hidden="true" className="empty-mark">?</span>
+              <h3>Previous workspace found</h3>
+              <p>A saved workspace exists under an older user-only scope. It has no verified company ownership, so its teams will stay hidden until you choose what to do.</p>
+              <div className="dialog-actions">
+                <button className="primary-button" disabled={recoveryBusy} onClick={() => void handleLegacyRecovery(true)} type="button">
+                  {recoveryBusy ? 'Recovering...' : 'Recover saved workspace'}
+                </button>
+                <button disabled={recoveryBusy} onClick={() => void handleLegacyRecovery(false)} type="button">Start empty workspace</button>
+              </div>
+            </section>
+          )}
+          {!legacyRecoveryAvailable && <div className="widget-toolbar">
             <div className="month-controls" aria-label="Month navigation">
               <button aria-label="Previous month" onClick={() => setMonth((value) => shiftMonth(value, -1))} type="button">&lt;</button>
               <strong aria-live="polite">{formatMonth(month)}</strong>
@@ -1064,17 +1168,17 @@ export function Widget({ scope }: { scope: string }): ReactElement {
                 away
               </label>
             </div>
-          </div>
+          </div>}
 
-          <p className="precision-note" role="note">Daily leave overlap only. This view does not calculate partial-day hours or staffing capacity.</p>
-          <p className="refresh-note" aria-live="polite">{formatLastRefreshed(lastRefreshedAt)}</p>
+          {!legacyRecoveryAvailable && <p className="precision-note" role="note">Daily leave overlap only. This view does not calculate partial-day hours or staffing capacity.</p>}
+          {!legacyRecoveryAvailable && <p className="refresh-note" aria-live="polite">{formatLastRefreshed(lastRefreshedAt)}</p>}
 
-          {directoryStatus === 'loading' && <p className="status-message">Refreshing employee directory...</p>}
-          {calendarStatus === 'loading' && <p className="status-message">Loading team calendar...</p>}
-          {calendarError && <p className="status-message status-message--error" role="alert">{calendarError}{calendarStatus === 'stale' ? ' Showing the last successful result.' : ''}</p>}
+          {!legacyRecoveryAvailable && directoryStatus === 'loading' && <p className="status-message">Refreshing employee directory...</p>}
+          {!legacyRecoveryAvailable && calendarStatus === 'loading' && <p className="status-message">Loading team calendar...</p>}
+          {!legacyRecoveryAvailable && calendarError && <p className="status-message status-message--error" role="alert">{calendarError}{calendarStatus === 'stale' ? ' Showing the last successful result.' : ''}</p>}
 
-          {!workspaceReady && <section className="empty-state"><h3>Loading saved teams...</h3></section>}
-          {workspaceReady && !selectedGroup && (
+          {!legacyRecoveryAvailable && !workspaceReady && <section className="empty-state"><h3>Loading saved teams...</h3></section>}
+          {!legacyRecoveryAvailable && workspaceReady && !selectedGroup && (
             <section className="empty-state">
               <span aria-hidden="true" className="empty-mark">+</span>
               <h3>No team selected</h3>
@@ -1082,7 +1186,7 @@ export function Widget({ scope }: { scope: string }): ReactElement {
               <button className="primary-button" onClick={(event) => openGroupEditor(event)} type="button">Create your first team</button>
             </section>
           )}
-          {workspaceReady && selectedGroup && selectedGroup.memberIds.length === 0 && (
+          {!legacyRecoveryAvailable && workspaceReady && selectedGroup && selectedGroup.memberIds.length === 0 && (
             <section className="empty-state">
               <span aria-hidden="true" className="empty-mark">+</span>
               <h3>{selectedGroup.name} has no members</h3>
@@ -1090,7 +1194,7 @@ export function Widget({ scope }: { scope: string }): ReactElement {
               <button className="primary-button" onClick={(event) => openGroupEditor(event, selectedGroup)} type="button">Add members</button>
             </section>
           )}
-          {workspaceReady && selectedGroup && selectedGroup.memberIds.length > 0 && displayedCalendar && (
+          {!legacyRecoveryAvailable && workspaceReady && selectedGroup && selectedGroup.memberIds.length > 0 && displayedCalendar && (
             <>
               <section aria-label="Team summary" className="summary-strip">
                 <div><span>Confirmed away</span><strong>{approvedPeople.size}</strong></div>

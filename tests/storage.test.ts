@@ -6,9 +6,12 @@ import {
 } from '../src/domain';
 import {
   exportGroups,
+  inspectWorkspace,
+  legacyUserScope,
   loadWorkspace,
   mergeGroups,
   parseImport,
+  recoverLegacyWorkspace,
   saveWorkspace,
   subscribeWorkspace,
   validateWorkspace,
@@ -19,6 +22,8 @@ type Listener = (changes: Record<string, Change>, areaName: string) => void;
 
 const scope = 'hbhr:user:123';
 const otherScope = 'hbhr:user:456';
+const companyScope = 'hbhr:company:10:user:123';
+const otherCompanyScope = 'hbhr:company:11:user:123';
 
 function group(id: string, name = id, memberIds: string[] = ['1']): Group {
   return { id, name, memberIds };
@@ -94,6 +99,20 @@ describe('scoped chrome storage CRUD', () => {
     ]);
   });
 
+  it('keeps the same user ID isolated between verified companies', async () => {
+    const first = workspace([group('one', 'Company one', ['1'])]);
+    const second = workspace([group('two', 'Company two', ['2'])]);
+    await saveWorkspace(companyScope, first);
+    await saveWorkspace(otherCompanyScope, second);
+
+    await expect(loadWorkspace(companyScope)).resolves.toEqual(first);
+    await expect(loadWorkspace(otherCompanyScope)).resolves.toEqual(second);
+    expect(Object.keys(values)).toEqual([
+      `hbhr:workspace:${companyScope}`,
+      `hbhr:workspace:${otherCompanyScope}`,
+    ]);
+  });
+
   it('falls back to defaults for invalid stored data and rejects invalid scopes', async () => {
     values[`hbhr:workspace:${scope}`] = {
       version: 1,
@@ -125,6 +144,60 @@ describe('scoped chrome storage CRUD', () => {
         collapsed: true,
       },
     });
+  });
+
+  it('distinguishes missing, valid, and invalid stored entries', async () => {
+    await expect(inspectWorkspace(companyScope)).resolves.toEqual({ status: 'missing' });
+    values[`hbhr:workspace:${companyScope}`] = workspace();
+    await expect(inspectWorkspace(companyScope)).resolves.toEqual({ status: 'valid', workspace: workspace() });
+    values[`hbhr:workspace:${companyScope}`] = { version: 99, groups: [] };
+    await expect(inspectWorkspace(companyScope)).resolves.toEqual({ status: 'invalid' });
+  });
+
+  it('requires explicit confirmation and preserves the legacy source during recovery', async () => {
+    const legacyScope = legacyUserScope('123');
+    const legacy = workspace([group('legacy', 'Legacy', ['1'])]);
+    values[`hbhr:workspace:${legacyScope}`] = legacy;
+
+    await expect(recoverLegacyWorkspace(companyScope, legacyScope, false)).rejects.toThrow(
+      'Legacy workspace recovery requires confirmation',
+    );
+    await expect(recoverLegacyWorkspace(companyScope, legacyScope, true)).resolves.toEqual({
+      status: 'recovered',
+      workspace: legacy,
+    });
+    expect(values[`hbhr:workspace:${legacyScope}`]).toEqual(legacy);
+    expect(values[`hbhr:workspace:${companyScope}`]).toEqual(legacy);
+  });
+
+  it('lets an existing destination win and does not overwrite it on repeated recovery', async () => {
+    const legacyScope = legacyUserScope('123');
+    const legacy = workspace([group('legacy', 'Legacy', ['1'])]);
+    const destination = workspace([group('current', 'Current', ['2'])]);
+    values[`hbhr:workspace:${legacyScope}`] = legacy;
+    values[`hbhr:workspace:${companyScope}`] = destination;
+
+    await expect(recoverLegacyWorkspace(companyScope, legacyScope, true)).resolves.toEqual({
+      status: 'destination-exists',
+      workspace: destination,
+    });
+    expect(values[`hbhr:workspace:${companyScope}`]).toEqual(destination);
+    expect(localSet).not.toHaveBeenCalled();
+  });
+
+  it('reports invalid or missing legacy entries and keeps them untouched when writes fail', async () => {
+    const legacyScope = legacyUserScope('123');
+    values[`hbhr:workspace:${legacyScope}`] = { version: 99 };
+    await expect(recoverLegacyWorkspace(companyScope, legacyScope, true)).resolves.toEqual({ status: 'source-invalid' });
+    expect(values[`hbhr:workspace:${companyScope}`]).toBeUndefined();
+
+    delete values[`hbhr:workspace:${legacyScope}`];
+    await expect(recoverLegacyWorkspace(companyScope, legacyScope, true)).resolves.toEqual({ status: 'source-missing' });
+
+    values[`hbhr:workspace:${legacyScope}`] = workspace([group('legacy', 'Legacy', ['1'])]);
+    localSet.mockRejectedValueOnce(new Error('write failed'));
+    await expect(recoverLegacyWorkspace(companyScope, legacyScope, true)).rejects.toThrow('write failed');
+    expect(values[`hbhr:workspace:${legacyScope}`]).toEqual(workspace([group('legacy', 'Legacy', ['1'])]));
   });
 });
 

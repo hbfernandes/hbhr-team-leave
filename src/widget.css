@@ -114,6 +114,76 @@ button:disabled {
   width: 100%;
 }
 
+.startup-shell {
+  align-items: flex-start;
+  background: var(--hbhr-surface);
+  border: 1px solid var(--hbhr-line);
+  border-left: 4px solid var(--hbhr-accent);
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin: 0;
+  max-width: 720px;
+  padding: 28px 30px;
+}
+
+.startup-shell[data-state="authentication-failed"],
+.startup-shell[data-state="retryable-failed"],
+.startup-shell[data-state="fallback-required"] {
+  border-left-color: var(--hbhr-warning);
+}
+
+.startup-shell h2 {
+  color: var(--hbhr-accent-strong);
+  font-size: 1.35rem;
+  line-height: 1.2;
+  margin: 0;
+}
+
+.startup-shell p {
+  color: var(--hbhr-muted);
+  margin: 0;
+  max-width: 620px;
+}
+
+.startup-shell button,
+.startup-shell a {
+  margin-top: 2px;
+}
+
+.startup-shell a {
+  color: var(--hbhr-accent-strong);
+  font-weight: 600;
+}
+
+.startup-shell details {
+  margin-top: 8px;
+  width: min(100%, 520px);
+}
+
+.startup-shell summary {
+  color: var(--hbhr-accent-strong);
+  cursor: pointer;
+  font-weight: 600;
+}
+
+.startup-shell form {
+  align-items: end;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 12px;
+}
+
+.startup-shell input {
+  background: var(--hbhr-surface);
+  border: 1px solid var(--hbhr-line-strong);
+  border-radius: 2px;
+  min-height: 36px;
+  min-width: min(280px, 100%);
+  padding: 8px 10px;
+}
+
 .widget-header {
   align-items: center;
   background: var(--hbhr-surface);

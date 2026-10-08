@@ -14,9 +14,11 @@ const mocks = vi.hoisted(() => ({
   exportGroups: vi.fn(),
   fetchCalendar: vi.fn(),
   fetchDirectory: vi.fn(),
+  inspectWorkspace: vi.fn(),
   loadWorkspace: vi.fn(),
   mergeGroups: vi.fn(),
   parseImport: vi.fn(),
+  recoverLegacyWorkspace: vi.fn(),
   saveWorkspace: vi.fn(),
   subscribeWorkspace: vi.fn(),
 }));
@@ -28,9 +30,11 @@ vi.mock('../src/adapter', () => ({
 
 vi.mock('../src/storage', () => ({
   exportGroups: mocks.exportGroups,
+  inspectWorkspace: mocks.inspectWorkspace,
   loadWorkspace: mocks.loadWorkspace,
   mergeGroups: mocks.mergeGroups,
   parseImport: mocks.parseImport,
+  recoverLegacyWorkspace: mocks.recoverLegacyWorkspace,
   saveWorkspace: mocks.saveWorkspace,
   subscribeWorkspace: mocks.subscribeWorkspace,
 }));
@@ -98,6 +102,11 @@ function resultForMonth(month: string): CalendarResult {
 
 function setupMocks(initialWorkspace: Workspace = defaultWorkspace()): void {
   mocks.loadWorkspace.mockResolvedValue(initialWorkspace);
+  mocks.inspectWorkspace.mockImplementation(async () => ({
+    status: 'valid',
+    workspace: await mocks.loadWorkspace(),
+  }));
+  mocks.recoverLegacyWorkspace.mockResolvedValue({ status: 'source-missing' });
   mocks.fetchDirectory.mockResolvedValue(employees);
   mocks.fetchCalendar.mockImplementation((month: string) => Promise.resolve(resultForMonth(month)));
   mocks.saveWorkspace.mockResolvedValue(undefined);
@@ -119,6 +128,59 @@ describe('Widget', () => {
     expect(await screen.findByRole('heading', { name: 'No team selected' })).toBeVisible();
     expect(screen.getByRole('button', { name: 'Create your first team' })).toBeVisible();
     expect(mocks.fetchCalendar).not.toHaveBeenCalled();
+  });
+
+  it('hides legacy teams until explicit recovery confirmation', async () => {
+    const user = userEvent.setup();
+    const verifiedScope = 'hbhr:company:7:user:42';
+    const legacyScope = 'hbhr:user:42';
+    const legacyWorkspace = workspaceWithGroup();
+    mocks.inspectWorkspace.mockImplementation(async (requestedScope: string) => (
+      requestedScope === verifiedScope
+        ? { status: 'missing' }
+        : { status: 'valid', workspace: legacyWorkspace }
+    ));
+    mocks.recoverLegacyWorkspace.mockResolvedValue({ status: 'recovered', workspace: legacyWorkspace });
+
+    render(<Widget legacyScope={legacyScope} scope={verifiedScope} />);
+
+    expect(await screen.findByRole('heading', { name: 'Previous workspace found' })).toBeVisible();
+    expect(screen.queryByRole('grid', { name: /team leave timeline/i })).not.toBeInTheDocument();
+    expect(screen.queryByRole('option', { name: /^Engineering \(2\)$/ })).not.toBeInTheDocument();
+
+    await user.click(screen.getByRole('button', { name: 'Recover saved workspace' }));
+    expect(await screen.findByRole('grid', { name: /team leave timeline/i })).toBeVisible();
+    expect(mocks.recoverLegacyWorkspace).toHaveBeenCalledWith(verifiedScope, legacyScope, true);
+  });
+
+  it('starts an empty verified workspace when legacy recovery is refused', async () => {
+    const user = userEvent.setup();
+    const verifiedScope = 'hbhr:company:7:user:42';
+    mocks.inspectWorkspace.mockImplementation(async (requestedScope: string) => (
+      requestedScope === verifiedScope
+        ? { status: 'missing' }
+        : { status: 'valid', workspace: workspaceWithGroup() }
+    ));
+
+    render(<Widget legacyScope="hbhr:user:42" scope={verifiedScope} />);
+    expect(await screen.findByRole('heading', { name: 'Previous workspace found' })).toBeVisible();
+    await user.click(screen.getByRole('button', { name: 'Start empty workspace' }));
+
+    expect(await screen.findByRole('heading', { name: 'No team selected' })).toBeVisible();
+    expect(mocks.recoverLegacyWorkspace).not.toHaveBeenCalled();
+  });
+
+  it('reports invalid legacy data without replacing or displaying it', async () => {
+    const verifiedScope = 'hbhr:company:7:user:42';
+    mocks.inspectWorkspace.mockImplementation(async (requestedScope: string) => (
+      requestedScope === verifiedScope ? { status: 'missing' } : { status: 'invalid' }
+    ));
+
+    render(<Widget legacyScope="hbhr:user:42" scope={verifiedScope} />);
+
+    expect(await screen.findByRole('alert')).toHaveTextContent('previous workspace could not be recovered');
+    expect(screen.queryByRole('heading', { name: 'Previous workspace found' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('option', { name: /^Engineering \(2\)$/ })).not.toBeInTheDocument();
   });
 
   it('marks today across header, members and summary only in the current month', async () => {

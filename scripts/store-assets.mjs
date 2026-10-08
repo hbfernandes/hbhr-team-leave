@@ -73,12 +73,17 @@ const calendar = {
     type: 'leave', id: `demo-leave-${index}`, user_id, start: `2026-10-${start}`, end: `2026-10-${end}`, status, only_text,
   })).concat([{ type: 'public-holiday', start: '2026-10-12', end: '2026-10-12', only_text: 'Demo public holiday' }]),
 };
+const profile = `<!doctype html><html lang="en"><head><title>Profile</title></head><body>
+  <form action="/user/settings/profile/work-details/update"><input type="hidden" name="id" value="900"></form>
+  <form action="/user/settings/profile/personal-details/update"><input type="hidden" name="id" value="900"></form>
+  <form action="/user/settings/profile/password/update"><input type="password" name="password"></form>
+  <div class="user-dbs-edit-form" wire:snapshot='${JSON.stringify({ data: { user_id: 900, company_id: 901 } })}'></div>
+</body></html>`;
 const home = `<!doctype html><html lang="en"><head><meta charset="utf-8"><title>Team Leave demo</title>
   <style>body{margin:0;color:#495057;background:#f7f7fa;font:13px Arial,sans-serif}header{height:64px;background:white;border-bottom:1px solid #e9ecf5;display:flex;align-items:center;justify-content:space-between;padding:0 32px}nav{display:flex;align-items:center;gap:14px}nav a{color:#204c95;text-decoration:none;padding:9px 15px;border-radius:20px}.menu-button-active{background:#204c95;color:white}main{padding:0 14px}footer{position:fixed;bottom:0;left:0;right:0;background:#183d86;color:white;padding:8px 32px;font-size:12px;z-index:1000}</style></head>
   <body data-layout-mode="light"><header><strong>HBHR · Demo workspace</strong><nav aria-label="Navigation"><div><a id="myInfoButton" href="/info">My Info</a></div><div><a id="myDocsButton" href="/docs">My Docs</a></div></nav></header>
   <main class="page-content"><div class="container-fluid"><div class="user-dashboard-grid"><h1>Demo dashboard</h1></div></div></main>
-  <footer>Demonstration only · Fictional employees and leave data · Independent extension, not an official HBHR product</footer>
-  <script>const demoAccount = { path: '/user/vehicle-rates', user_id: '900' };</script></body></html>`;
+  <footer>Demonstration only · Fictional employees and leave data · Independent extension, not an official HBHR product</footer></body></html>`;
 
 async function screenshots() {
   const profile = await mkdtemp(path.join(os.tmpdir(), 'team-leave-store-'));
@@ -93,6 +98,7 @@ async function screenshots() {
     await context.route(/^https?:\/\//, async (route) => {
       const url = new URL(route.request().url());
       if (url.origin !== 'https://app.hbhr.io') return route.abort();
+      if (url.pathname === '/user/settings/profile') return route.fulfill({ contentType: 'text/html', body: profile });
       if (url.pathname === '/people-directory') return route.fulfill({ contentType: 'text/html', body: directory });
       if (url.pathname === '/home/get-calendar') return route.fulfill({ contentType: 'application/json', body: JSON.stringify(calendar) });
       if (url.pathname === '/') return route.fulfill({ contentType: 'text/html', body: home });

@@ -18,17 +18,17 @@ The [extension-choice decision](../decisions/0001-use-browser-extension-for-team
 | --- | --- |
 | [Manifest](../../public/manifest.json) | Chrome 120 minimum, storage permission, narrow app.hbhr.io content-script match, bundled icons |
 | [Startup guard](../../public/transition.js) | Document-start masking during deep-link startup; fail open after ten seconds |
-| [Content entry](../../src/content.tsx) | Header link, hash route, native-content restoration, account scope and theme/lifecycle reconciliation |
+| [Content entry](../../src/content.tsx) | Header link, hash route, asynchronous account verification, native-content restoration and theme/lifecycle reconciliation |
 | [React UI](../../src/Widget.tsx) and [styles](../../src/widget.css) | Team editing, timeline, summaries, dialogs and native-style presentation |
-| [Adapter](../../src/adapter.ts) | Bounded same-origin reads, directory/calendar validation and account-signal detection |
+| [Adapter](../../src/adapter.ts) | Bounded same-origin profile, directory and calendar reads; strict identity and response validation |
 | [Domain](../../src/domain.ts) | Date-only ranges, unique-person daily approved/pending overlap |
-| [Storage](../../src/storage.ts) | Local scoped workspaces, import validation and cross-tab subscriptions |
+| [Storage](../../src/storage.ts) | Local company/user-scoped workspaces, explicit legacy recovery, import validation and cross-tab subscriptions |
 
 # Boundaries
 
 The section lives on the HBHR origin at `/#hbhr-team-leave`; it is not a backend route or separate extension tab. The extension uses the browser's existing session for GET reads without extracting cookies or credentials. HBHR permissions remain authoritative.
 
-The account boundary is a verified signed-in user ID, or a manually selected organization-and-account label when verification fails. No organization ID has been verified. Scope changes remount the UI and discard in-memory data; silent server-side switches without page changes require a reload.
+The automatic account boundary is a verified signed-in user ID plus company ID from the authenticated profile response. The profile request runs only after the Team Leave section becomes active. Its shell states are `resolving`, authentication failure, retryable failure and verification fallback; directory and calendar data do not load before verification. If the company marker is unavailable or the response is unsupported/conflicting, the extension does not guess a company and offers Retry plus an explicit user-managed manual label. Scope changes remount the UI and discard in-memory data; silent server-side switches without page changes remain undetectable and require section re-entry or reload.
 
 Shadow DOM isolates styling, not information from the host page. Native main-content children are hidden with prior visibility preserved; header/navigation remain available. Ordinary home does not fetch directory/calendar data for the extension.
 
@@ -38,8 +38,8 @@ React/ReactDOM, TypeScript and Vite produce a bundled IIFE. Vitest/Testing Libra
 
 # Trade-offs
 
-Local storage avoids a new HR-data backend but does not centrally manage or automatically share teams. Import/export is a user-controlled copy. HBHR DOM and response contracts can change and require adapter updates. Date-only overlap cannot infer partial-day hours, schedules, capacity or holiday eligibility.
+Local storage avoids a new HR-data backend but does not centrally manage or automatically share teams. Import/export is a user-controlled copy. HBHR DOM and response contracts can change and require adapter updates; the company marker is currently tied to an account-specific Livewire component and has not been validated across every permission/account configuration. Date-only overlap cannot infer partial-day hours, schedules, capacity or holiday eligibility.
 
 # Data Ownership
 
-HBHR owns employee/leave records. The extension retains normalized directory/calendar data in memory and persists only team definitions/preferences under an account-scoped local-storage key. Browser/network caching is separate. Exported definitions contain employee IDs and source scope, not leave records; exports are not anonymous. The [public privacy page](../../store-assets/privacy.html) describes these practices for users.
+HBHR owns employee/leave records. The extension parses the profile response off-page, retains only the required user/company IDs for the current scope and discards the HTML and parsed document. It retains normalized directory/calendar data in memory and persists only team definitions/preferences under `hbhr:workspace:hbhr:company:<companyId>:user:<userId>` for automatic accounts, or an explicit manual scope. Browser/network caching is separate. Existing user-only entries are preserved as ambiguous legacy data and copied only after explicit recovery confirmation; invalid entries are never replaced by defaults. Exported definitions contain employee IDs and source scope, not leave records; exports are not anonymous. The [public privacy page](../../store-assets/privacy.html) describes these practices for users.

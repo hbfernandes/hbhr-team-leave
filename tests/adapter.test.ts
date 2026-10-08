@@ -1,8 +1,10 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
-  detectAccount,
+  AdapterError,
+  fetchAccountIdentity,
   fetchCalendar,
   fetchDirectory,
+  parseAccountProfile,
   parseCalendar,
   parseDirectory,
 } from '../src/adapter';
@@ -22,8 +24,41 @@ function directoryRow(values: string[]): string {
   return `<tr>${values.map((value) => `<td>${value}</td>`).join('')}</tr>`;
 }
 
-function response(body: string, status = 200, headers: Record<string, string> = {}): Response {
-  return new Response(body, { status, headers });
+function response(body: string, status = 200, headers: Record<string, string> = {}, url = ''): Response {
+  const result = new Response(body, { status, headers });
+  if (url) {
+    Object.defineProperty(result, 'url', { value: url });
+  }
+  return result;
+}
+
+function profileHtml(options: {
+  formIds?: string[];
+  snapshot?: unknown;
+  includeSnapshot?: boolean;
+  includePasswordChange?: boolean;
+  script?: string;
+} = {}): string {
+  const formIds = options.formIds ?? ['123', '123'];
+  const forms = formIds
+    .map(
+      (id, index) => `<form action="/user/settings/profile/${index ? 'personal' : 'work'}-details/update">
+        <input type="hidden" name="id" value="${id}">
+        <input type="text" name="unrelated-${index}" value="unrelated">
+      </form>`,
+    )
+    .join('');
+  const passwordForm = options.includePasswordChange
+    ? '<form action="/user/settings/profile/password/update"><input type="password" name="password"></form>'
+    : '';
+  const snapshot = options.snapshot ?? { data: { user_id: 123, company_id: 456 } };
+  const component = options.includeSnapshot === false
+    ? ''
+    : `<div class="user-dbs-edit-form" wire:snapshot='${JSON.stringify(snapshot)}'></div>`;
+  return `<!doctype html><html><head><title>Profile</title></head><body>
+    ${forms}${passwordForm}${component}<input id="unrelated-id" value="999">
+    <script>${options.script ?? 'window.__profileScriptRan = true;'}</script>
+  </body></html>`;
 }
 
 function calendarEvent(overrides: Record<string, unknown> = {}): Record<string, unknown> {
@@ -232,52 +267,67 @@ describe('parseCalendar', () => {
   });
 });
 
-describe('detectAccount', () => {
-  it('detects the current user when HBHR omits its optional calendar script', () => {
-    const document = new DOMParser().parseFromString(`
-      <script>
-        $.ajax({ url: "/user/vehicle-rates", data: { vehicle_id: vehicleId,
-          user_id: "123", date: $claimItem.find('.date-input').val() } });
-      </script>
-    `, 'text/html');
-    expect(detectAccount(document)).toBe('hbhr:user:123');
+describe('parseAccountProfile', () => {
+  it('parses matching profile forms and the recognised company snapshot', () => {
+    expect(parseAccountProfile(profileHtml())).toEqual({
+      userId: '123',
+      companyId: '456',
+      scope: 'hbhr:company:456:user:123',
+      source: 'authenticated-profile',
+    });
   });
 
-  it('does not use unrelated employee IDs or calendar-only IDs as account identity', () => {
-    for (const html of [
-      '<script>const employee = { user_id: "123" };</script>',
-      '<script>if (event.event.user_id == "123") {}</script>',
-      '<script src="/user/vehicle-rates">const user_id = "123";</script>',
-      '<script>const form = {url:"/user/vehicle-rates", user_id:"123"}; const other = {user_id:"456"};</script>',
-    ]) expect(detectAccount(new DOMParser().parseFromString(html, 'text/html'))).toBeNull();
+  it('accepts one recognised form, agreeing duplicate forms, and password-change fields', () => {
+    expect(parseAccountProfile(profileHtml({ formIds: ['123'], includePasswordChange: true }))).toMatchObject({
+      userId: '123',
+      companyId: '456',
+    });
+    expect(parseAccountProfile(profileHtml({ includePasswordChange: true }))).toMatchObject({
+      userId: '123',
+      companyId: '456',
+    });
   });
 
-  it('requires matching verified event and mileage-form user IDs', () => {
-    const document = new DOMParser().parseFromString(`
-      <script>
-        if (event.event.user_id == '123') { window.ready = true; }
-      </script>
-      <script>
-        const form = { url: '/user/vehicle-rates', user_id: '123' };
-      </script>
-    `, 'text/html');
-
-    expect(detectAccount(document)).toBe('hbhr:user:123');
+  it('ignores unrelated IDs and does not execute profile scripts', () => {
+    const result = parseAccountProfile(profileHtml());
+    expect(result.userId).toBe('123');
+    expect((globalThis as { __profileScriptRan?: boolean }).__profileScriptRan).toBeUndefined();
   });
 
-  it('returns null when verified and current account IDs conflict or are ambiguous', () => {
-    const conflict = new DOMParser().parseFromString(`
-      <script>if (event.event.user_id === '123') {}</script>
-      <script>const form = { url: '/user/vehicle-rates', user_id: '456' };</script>
-    `, 'text/html');
-    const ambiguous = new DOMParser().parseFromString(`
-      <script>if (event.event.user_id == '123') {}</script>
-      <script>if (event.event.user_id == '456') {}</script>
-      <script>const form = { url: '/user/vehicle-rates', user_id: '123' };</script>
-    `, 'text/html');
+  it('rejects missing, invalid, conflicting, malformed, and oversized identity values', () => {
+    expect(() => parseAccountProfile(profileHtml({ includeSnapshot: false }))).toThrow(
+      'HBHR profile company identity was unavailable',
+    );
+    expect(() => parseAccountProfile(profileHtml({ formIds: ['123', '456'] }))).toThrow(
+      'HBHR profile identity conflicted',
+    );
+    expect(() => parseAccountProfile(profileHtml({ formIds: ['0'] }))).toThrow(
+      'HBHR profile user ID was invalid',
+    );
+    expect(() => parseAccountProfile(profileHtml({ formIds: ['9'.repeat(129)] }))).toThrow(
+      'HBHR profile user ID was invalid',
+    );
+    expect(() => parseAccountProfile(profileHtml({ snapshot: { data: { user_id: 999, company_id: 456 } } }))).toThrow(
+      'HBHR profile identity conflicted',
+    );
+    expect(() => parseAccountProfile(profileHtml({ snapshot: { data: { user_id: 123 } } }))).toThrow(
+      'HBHR profile company identity was unavailable',
+    );
+    expect(() => parseAccountProfile(profileHtml({ snapshot: { data: { user_id: { value: 123 }, company_id: 456 } } }))).toThrow(
+      'HBHR profile user ID was invalid',
+    );
+  });
 
-    expect(detectAccount(conflict)).toBeNull();
-    expect(detectAccount(ambiguous)).toBeNull();
+  it('supports Livewire scalar tuples and rejects malformed snapshots', () => {
+    expect(parseAccountProfile(profileHtml({
+      snapshot: { data: { user_id: [123, { s: 'int' }], company_id: [456, { s: 'int' }] } },
+    }))).toMatchObject({ userId: '123', companyId: '456' });
+    expect(() => parseAccountProfile(profileHtml({
+      snapshot: { data: { user_id: [123], company_id: 456 } },
+    }))).toThrow('HBHR profile user ID field was malformed');
+    expect(() => parseAccountProfile(profileHtml({
+      snapshot: { data: { user_id: 123, company_id: { nested: 456 } } },
+    }))).toThrow('HBHR profile company ID was invalid');
   });
 });
 
@@ -291,6 +341,45 @@ describe('adapter requests', () => {
 
   afterEach(() => {
     vi.unstubAllGlobals();
+  });
+
+  it('requests authenticated profile HTML without exposing password fields to the parser', async () => {
+    fetchMock.mockResolvedValue(response(profileHtml({ includePasswordChange: true }), 200, {
+      'content-type': 'text/html; charset=UTF-8',
+    }, 'https://app.hbhr.io/user/settings/profile'));
+
+    await expect(fetchAccountIdentity()).resolves.toMatchObject({
+      userId: '123',
+      companyId: '456',
+      scope: 'hbhr:company:456:user:123',
+    });
+    expect(fetchMock).toHaveBeenCalledWith('/user/settings/profile', expect.objectContaining({
+      method: 'GET',
+      credentials: 'same-origin',
+      headers: { Accept: 'text/html' },
+      cache: 'no-store',
+      signal: expect.any(AbortSignal),
+    }));
+  });
+
+  it('rejects profile auth failures, login redirects, wrong content types, and unexpected URLs', async () => {
+    fetchMock.mockResolvedValueOnce(response('', 401, {}, 'https://app.hbhr.io/user/settings/profile'));
+    await expect(fetchAccountIdentity()).rejects.toMatchObject({ code: 'authentication' });
+
+    fetchMock.mockResolvedValueOnce(response('<form action="/login"><input type="password"></form>', 200, {
+      'content-type': 'text/html',
+    }, 'https://app.hbhr.io/login'));
+    await expect(fetchAccountIdentity()).rejects.toThrow('Log into HBHR, then refresh');
+
+    fetchMock.mockResolvedValueOnce(response('{}', 200, {
+      'content-type': 'application/json',
+    }, 'https://app.hbhr.io/user/settings/profile'));
+    await expect(fetchAccountIdentity()).rejects.toThrow('HBHR profile response was not HTML');
+
+    fetchMock.mockResolvedValueOnce(response(profileHtml(), 200, {
+      'content-type': 'text/html',
+    }, 'https://app.hbhr.io/people-directory'));
+    await expect(fetchAccountIdentity()).rejects.toThrow('HBHR profile response URL was unexpected');
   });
 
   it('requests directory endpoint with same-origin HTML headers', async () => {

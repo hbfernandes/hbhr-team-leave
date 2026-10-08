@@ -13,32 +13,32 @@
 </head>
 <body><main>
   <h1>HBHR Team Leave Privacy Policy</h1>
-  <p class="date">Effective date: 2 October 2026</p>
+  <p class="date">Effective date: 8 October 2026</p>
   <p>HBHR Team Leave is an independent browser extension that displays leave overlap for teams you define in your HBHR dashboard. It is not an official HealthBoxHR product. An existing HBHR account is required.</p>
 
   <h2>Data used by the extension</h2>
   <ul>
-    <li><strong>Account identifier:</strong> a signed-in user identifier from the HBHR page, or a workspace label you supply, separates locally saved teams between accounts.</li>
+    <li><strong>Account identifiers:</strong> when Team Leave opens, it requests the authenticated HBHR profile page and extracts only the signed-in user ID from recognized profile forms and the company ID from the recognized account component. Together they separate automatically saved teams between verified company accounts. If company identity is unavailable, you may choose a manual workspace label; that separation is user-managed.</li>
     <li><strong>Employee directory:</strong> employee identifiers, names, departments, line managers and regions support team selection.</li>
     <li><strong>Calendar data:</strong> leave dates, approval status and descriptions, and public-holiday dates and descriptions support the timeline and overlap summaries. Descriptions may contain personal information supplied by HBHR.</li>
     <li><strong>Your settings:</strong> team names, member identifiers and display preferences are saved locally.</li>
   </ul>
-  <p>The extension does not retain directory email addresses, telephone numbers, photos or notes. It does not calculate working hours or change HR records.</p>
+  <p>The extension does not retain directory email addresses, telephone numbers, photos or notes. Profile HTML, Livewire payloads, names and unrelated profile fields are discarded after the two required IDs are extracted; they are not persisted or logged. It does not calculate working hours or change HR records.</p>
 
   <h2>Where processing and storage happen</h2>
   <p>Directory and calendar responses are processed in the browser and retained in memory while the interface is active. The extension does not persist these responses to its local storage. HBHR and Chrome may handle ordinary network caching independently.</p>
   <p>Team definitions, preferences and account-scoping identifiers are saved using Chrome's local extension storage, not Chrome Sync. They remain until you delete or replace teams, remove the extension, or clear the relevant browser profile data. Separate Chrome profiles and installations have separate storage.</p>
 
   <h2>Network access and credentials</h2>
-  <p>The extension makes read-only requests to <a href="https://app.hbhr.io/">app.hbhr.io</a> for the employee directory and calendar, using your existing HBHR session. HBHR receives these requests and applies its own access controls and privacy practices.</p>
-  <p>The extension does not ask for your password, read cookie values, or copy authentication tokens. Chrome may attach existing session cookies to requests to HBHR. The extension has no developer-operated data collection server, analytics, advertising or telemetry. It does not transmit HR data to the publisher or sell it.</p>
+  <p>The extension makes read-only requests to <a href="https://app.hbhr.io/">app.hbhr.io</a> for the authenticated profile, employee directory and calendar, using your existing HBHR session. The profile request is a same-origin <code>GET /user/settings/profile</code> with an HTML response and no-store cache preference. HBHR receives these requests and applies its own access controls and privacy practices.</p>
+  <p>The extension does not ask for your password, read cookie values, or copy authentication tokens. A password-change form in the profile is not used as a login test. Chrome may attach existing session cookies to requests to HBHR. The extension has no developer-operated data collection server, analytics, advertising or telemetry. It does not transmit HR data to the publisher or sell it.</p>
 
   <h2>Importing and exporting teams</h2>
   <p>An export contains team names, team identifiers, employee member identifiers and the originating workspace/account identifier. It contains no leave records or credentials. Exports are not anonymous: employee identifiers and team names may identify people or their affiliations.</p>
   <p>The extension does not automatically upload exports. If you copy or share one, you choose the recipient and sharing service; that service's privacy terms apply. Share only with authorized colleagues in the same organization. Imports are saved locally under the recipient's account and do not grant HBHR permissions.</p>
 
   <h2>Your choices</h2>
-  <p>You can change or delete teams in Manage teams, control pending-leave visibility, and disable or uninstall the extension. Uninstalling removes its local extension storage; it does not delete exports you saved elsewhere or records held by HBHR. For requests about your employer's HR data, contact your employer or HBHR administrator.</p>
+  <p>You can change or delete teams in Manage teams, control pending-leave visibility, decline legacy-workspace recovery, and disable or uninstall the extension. Uninstalling removes its local extension storage; it does not delete exports you saved elsewhere or records held by HBHR. For requests about your employer's HR data, contact your employer or HBHR administrator.</p>
 
   <h2>Changes and contact</h2>
   <p>This policy will be updated when the extension's data practices change. The effective date identifies the current revision.</p>

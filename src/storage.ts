@@ -9,6 +9,18 @@ const MAX_IMPORT_BYTES = 256 * 1024;
 const MAX_THRESHOLD = 1_000;
 const SAFE_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
 
+export type WorkspaceInspection =
+  | { status: 'missing' }
+  | { status: 'valid'; workspace: Workspace }
+  | { status: 'invalid' };
+
+export type LegacyRecoveryResult =
+  | { status: 'recovered'; workspace: Workspace }
+  | { status: 'destination-exists'; workspace: Workspace }
+  | { status: 'source-missing' }
+  | { status: 'source-invalid' }
+  | { status: 'destination-invalid' };
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
@@ -144,6 +156,11 @@ function storageKey(scope: string): string {
   return `${STORAGE_PREFIX}${scope}`;
 }
 
+export function legacyUserScope(userId: string): string {
+  assertSafeId(userId, 'user ID');
+  return `hbhr:user:${userId}`;
+}
+
 function legacyWorkspace(value: unknown): Workspace {
   if (!isRecord(value)) {
     throw new Error('Invalid workspace.');
@@ -167,23 +184,66 @@ function legacyWorkspace(value: unknown): Workspace {
   );
 }
 
-export async function loadWorkspace(scope: string): Promise<Workspace> {
-  const key = storageKey(scope);
-  const stored = await chrome.storage.local.get(key);
-  const value = isRecord(stored) ? stored[key] : undefined;
+function storedValue(stored: unknown, key: string): unknown {
+  return isRecord(stored) && Object.prototype.hasOwnProperty.call(stored, key) ? stored[key] : undefined;
+}
+
+function inspectStoredValue(value: unknown): WorkspaceInspection {
   if (value === undefined) {
-    return defaultWorkspace();
+    return { status: 'missing' };
   }
 
   try {
-    return validateWorkspace(value);
+    return { status: 'valid', workspace: validateWorkspace(value) };
   } catch {
     try {
-      return legacyWorkspace(value);
+      return { status: 'valid', workspace: legacyWorkspace(value) };
     } catch {
-      return defaultWorkspace();
+      return { status: 'invalid' };
     }
   }
+}
+
+export async function inspectWorkspace(scope: string): Promise<WorkspaceInspection> {
+  const key = storageKey(scope);
+  const stored = await chrome.storage.local.get(key);
+  return inspectStoredValue(storedValue(stored, key));
+}
+
+export async function loadWorkspace(scope: string): Promise<Workspace> {
+  const inspection = await inspectWorkspace(scope);
+  return inspection.status === 'valid' ? inspection.workspace : defaultWorkspace();
+}
+
+export async function recoverLegacyWorkspace(
+  destinationScope: string,
+  legacyScope: string,
+  confirmed: boolean,
+): Promise<LegacyRecoveryResult> {
+  if (!confirmed) {
+    throw new Error('Legacy workspace recovery requires confirmation.');
+  }
+
+  const source = await inspectWorkspace(legacyScope);
+  if (source.status === 'missing') {
+    return { status: 'source-missing' };
+  }
+  if (source.status === 'invalid') {
+    return { status: 'source-invalid' };
+  }
+
+  const destination = await inspectWorkspace(destinationScope);
+  if (destination.status === 'valid') {
+    return { status: 'destination-exists', workspace: destination.workspace };
+  }
+  if (destination.status === 'invalid') {
+    return { status: 'destination-invalid' };
+  }
+
+  // Chrome storage has no compare-and-swap. Rechecking immediately before this
+  // write prevents ordinary repeated recovery from overwriting a destination.
+  await saveWorkspace(destinationScope, source.workspace);
+  return { status: 'recovered', workspace: source.workspace };
 }
 
 export async function saveWorkspace(scope: string, value: Workspace): Promise<void> {

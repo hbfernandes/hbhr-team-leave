@@ -37,20 +37,26 @@ const CURRENT_MONTH = new Date().toISOString().slice(0, 7);
 const HOSTILE_NAME = '<img src=x onerror="window.__hbhrXss = true">';
 
 type CalendarMode = 'ok' | 'auth';
+type ProfileMode = 'ok' | 'auth' | 'missing-company' | 'temporary' | 'pending';
 type HeaderVariant = 'docs' | 'info' | 'both';
 
 interface FixtureOptions {
   accountId?: string;
+  companyId?: string;
   calendarMode?: CalendarMode;
   headerVariant?: HeaderVariant;
   hostileName?: string;
-  mileageIdentityOnly?: boolean;
+  profileMode?: ProfileMode;
 }
 
 interface FixtureController {
   calendarRequests: URL[];
   directoryRequests: URL[];
+  profileRequests: URL[];
   setCalendarMode(mode: CalendarMode): void;
+  setAccount(accountId: string, companyId: string): void;
+  setProfileMode(mode: ProfileMode): void;
+  releaseProfile(): void;
 }
 
 async function preparePackagedExtension(): Promise<string> {
@@ -88,7 +94,7 @@ function headerFixture(variant: HeaderVariant = 'both'): string {
     </header>`;
 }
 
-function dashboardFixture(accountId: string, headerVariant: HeaderVariant = 'both'): string {
+function dashboardFixture(headerVariant: HeaderVariant = 'both'): string {
   return `<!doctype html>
 <html lang="en">
   <head><meta charset="utf-8"><title>HBHR Home</title></head>
@@ -108,9 +114,23 @@ function dashboardFixture(accountId: string, headerVariant: HeaderVariant = 'bot
         </div>
       </div>
     </main>
-    <script id="hbhr-current-user">window.__hbhrXss = false; window.current_user_id = '${accountId}';</script>
-    <script id="hbhr-event-signal">const event = { event: { user_id: '${accountId}' } }; if (event.event.user_id == '${accountId}') { document.body.dataset.hbhrVerified = 'yes'; }</script>
-    <script id="hbhr-vehicle-rate-signal">window.vehicleRates = { path: '/user/vehicle-rates', user_id: '${accountId}' };</script>
+  </body>
+</html>`;
+}
+
+function profileFixture(accountId: string, companyId: string, includeCompany = true): string {
+  const snapshot = includeCompany
+    ? JSON.stringify({ data: { user_id: Number(accountId), company_id: Number(companyId) } })
+    : JSON.stringify({ data: { user_id: Number(accountId) } });
+  return `<!doctype html>
+<html lang="en">
+  <head><meta charset="utf-8"><title>Profile</title></head>
+  <body>
+    <form action="/user/settings/profile/work-details/update"><input type="hidden" name="id" value="${accountId}"></form>
+    <form action="/user/settings/profile/personal-details/update"><input type="hidden" name="id" value="${accountId}"></form>
+    <form action="/user/settings/profile/password/update"><input type="password" name="password"></form>
+    <div class="user-dbs-edit-form" wire:snapshot='${snapshot}'></div>
+    <input id="unrelated-id" value="999">
   </body>
 </html>`;
 }
@@ -208,11 +228,32 @@ async function fulfill(route: Route, body: string | object, contentType: string,
 async function installFixtures(page: Page, options: FixtureOptions = {}): Promise<FixtureController> {
   let calendarMode = options.calendarMode ?? 'ok';
   const accountId = options.accountId ?? '101';
+  let currentAccountId = accountId;
+  let currentCompanyId = options.companyId ?? '501';
+  let profileMode = options.profileMode ?? 'ok';
+  let releasePendingProfile: (() => void) | null = null;
   const calendarRequests: URL[] = [];
   const directoryRequests: URL[] = [];
+  const profileRequests: URL[] = [];
 
   await page.route('https://app.hbhr.io/**', async (route) => {
     const url = new URL(route.request().url());
+    if (url.pathname === '/user/settings/profile') {
+      profileRequests.push(url);
+      if (profileMode === 'pending') {
+        await new Promise<void>((resolve) => { releasePendingProfile = resolve; });
+      }
+      if (profileMode === 'auth') {
+        await fulfill(route, loginFixture(), 'text/html', 401);
+        return;
+      }
+      if (profileMode === 'temporary' && profileRequests.length === 1) {
+        await fulfill(route, 'Temporary profile failure', 'text/plain', 503);
+        return;
+      }
+      await fulfill(route, profileFixture(currentAccountId, currentCompanyId, profileMode !== 'missing-company'), 'text/html');
+      return;
+    }
     if (url.pathname === '/home/get-calendar') {
       calendarRequests.push(url);
       if (calendarMode === 'auth') {
@@ -235,12 +276,7 @@ async function installFixtures(page: Page, options: FixtureOptions = {}): Promis
     }
 
     if (['/', '/home', '/home/'].includes(url.pathname)) {
-      let html = dashboardFixture(accountId, options.headerVariant);
-      if (options.mileageIdentityOnly) {
-        html = html.replace(/<script id="hbhr-current-user">[\s\S]*?<\/script>/, '')
-          .replace(/<script id="hbhr-event-signal">[\s\S]*?<\/script>/, '');
-      }
-      await fulfill(route, html, 'text/html');
+      await fulfill(route, dashboardFixture(options.headerVariant), 'text/html');
       return;
     }
 
@@ -250,8 +286,20 @@ async function installFixtures(page: Page, options: FixtureOptions = {}): Promis
   return {
     calendarRequests,
     directoryRequests,
+    profileRequests,
     setCalendarMode(mode) {
       calendarMode = mode;
+    },
+    setAccount(nextAccountId, nextCompanyId) {
+      currentAccountId = nextAccountId;
+      currentCompanyId = nextCompanyId;
+    },
+    setProfileMode(mode) {
+      profileMode = mode;
+    },
+    releaseProfile() {
+      releasePendingProfile?.();
+      releasePendingProfile = null;
     },
   };
 }
@@ -295,18 +343,57 @@ async function createTeam(page: Page, name = 'Platform', memberPattern: RegExp =
   await expect(root.getByRole('grid', { name: /team leave timeline/i })).toBeVisible();
 }
 
-async function setAccountSignals(page: Page, accountId: string): Promise<void> {
-  await page.evaluate((nextAccountId) => {
-    const currentUser = document.querySelector<HTMLScriptElement>('#hbhr-current-user');
-    const eventSignal = document.querySelector<HTMLScriptElement>('#hbhr-event-signal');
-    const vehicleSignal = document.querySelector<HTMLScriptElement>('#hbhr-vehicle-rate-signal');
-    if (!currentUser || !eventSignal || !vehicleSignal) {
-      throw new Error('Synthetic account signals missing.');
+async function switchAccount(page: Page, fixture: FixtureController, accountId: string, companyId: string): Promise<void> {
+  fixture.setAccount(accountId, companyId);
+  await page.evaluate(() => { location.hash = ''; });
+  await expect(widget(page)).toHaveCount(0);
+  await page.locator(NAV_SELECTOR).click();
+  await expectStandaloneWidget(page);
+}
+
+async function seedExtensionStorage(page: Page, values: Record<string, unknown>): Promise<void> {
+  const client = await page.context().newCDPSession(page);
+  const contexts: Array<{ id: number; auxData?: { type?: string } }> = [];
+  client.on('Runtime.executionContextCreated', (event: { context: { id: number; auxData?: { type?: string } } }) => {
+    contexts.push(event.context);
+  });
+  await client.send('Runtime.enable');
+  await page.goto('/home', { waitUntil: 'domcontentloaded' });
+
+  for (const context of contexts.filter((candidate) => candidate.auxData?.type === 'isolated')) {
+    const expression = `(async () => {
+      if (typeof chrome === 'undefined' || !chrome.storage?.local) return false;
+      await chrome.storage.local.set(${JSON.stringify(values)});
+      return true;
+    })()`;
+    let result: { result?: { value?: unknown } };
+    try {
+      result = await client.send('Runtime.evaluate', {
+        awaitPromise: true,
+        contextId: context.id,
+        expression,
+        returnByValue: true,
+      }) as { result?: { value?: unknown } };
+    } catch (error) {
+      if (error instanceof Error && /Cannot find context/.test(error.message)) continue;
+      throw error;
     }
-    currentUser.textContent = `window.current_user_id = '${nextAccountId}';`;
-    eventSignal.textContent = `const event = { event: { user_id: '${nextAccountId}' } }; if (event.event.user_id == '${nextAccountId}') { document.body.dataset.hbhrVerified = 'yes'; }`;
-    vehicleSignal.textContent = `window.vehicleRates = { path: '/user/vehicle-rates', user_id: '${nextAccountId}' };`;
-  }, accountId);
+    if (result.result?.value === true) {
+      await client.detach();
+      return;
+    }
+  }
+
+  await client.detach();
+  throw new Error('Synthetic extension storage context was unavailable.');
+}
+
+function legacyWorkspaceFixture(): object {
+  return {
+    version: 1,
+    groups: [{ id: 'legacy-platform', name: 'Legacy Platform', memberIds: ['201', '202'] }],
+    preferences: { selectedGroupId: 'legacy-platform', pending: false, threshold: 3, collapsed: false },
+  };
 }
 
 const headerNavigationCases = [
@@ -335,6 +422,8 @@ test('keeps native header links unchanged and does not mount on hashless home', 
   await expect(page.locator('#myInfoButton')).toHaveAttribute('href', '/info');
   await expect(page.locator(NAV_SELECTOR)).toBeVisible();
   await expect(widget(page)).toHaveCount(0);
+  expect(await page.locator('script').count()).toBe(0);
+  await expect.poll(() => fixture.profileRequests.length).toBe(0);
   await expect.poll(() => fixture.directoryRequests.length).toBe(0);
   await expect.poll(() => fixture.calendarRequests.length).toBe(0);
 
@@ -342,6 +431,100 @@ test('keeps native header links unchanged and does not mount on hashless home', 
   await expect(page).toHaveURL(TEAM_LEAVE_URL);
   await expectStandaloneWidget(page);
   await expect.poll(() => fixture.directoryRequests.length).toBeGreaterThan(0);
+});
+
+test('shows verification shell before any HR data request', async ({ page }) => {
+  const fixture = await installFixtures(page, { profileMode: 'pending' });
+  await page.goto(`/home${TEAM_LEAVE_HASH}`, { waitUntil: 'domcontentloaded' });
+  await expect.poll(() => fixture.profileRequests.length).toBe(1);
+  await expect(widget(page).getByRole('heading', { name: 'Verifying your HBHR account...' })).toBeVisible();
+  expect(fixture.directoryRequests).toHaveLength(0);
+  expect(fixture.calendarRequests).toHaveLength(0);
+
+  fixture.releaseProfile();
+  await expect(widget(page).getByRole('heading', { name: 'Team Leave', exact: true })).toBeVisible();
+});
+
+test('does not multiply profile requests during DOM reconciliation', async ({ page }) => {
+  const fixture = await installFixtures(page);
+  await openHome(page);
+  await expect.poll(() => fixture.profileRequests.length).toBe(1);
+  await page.evaluate(() => {
+    for (let index = 0; index < 12; index += 1) {
+      document.body.classList.toggle(`synthetic-${index}`);
+    }
+  });
+  await expect.poll(() => fixture.profileRequests.length).toBe(1);
+});
+
+test('aborts verification on section exit and ignores its late response', async ({ page }) => {
+  const fixture = await installFixtures(page, { profileMode: 'pending' });
+  await page.goto(`/home${TEAM_LEAVE_HASH}`, { waitUntil: 'domcontentloaded' });
+  await expect.poll(() => fixture.profileRequests.length).toBe(1);
+  await expect(widget(page).getByRole('heading', { name: 'Verifying your HBHR account...' })).toBeVisible();
+
+  await page.evaluate(() => { location.hash = ''; });
+  await expect(widget(page)).toHaveCount(0);
+  fixture.releaseProfile();
+  await expect.poll(() => fixture.directoryRequests.length).toBe(0);
+  await expect.poll(() => fixture.calendarRequests.length).toBe(0);
+});
+
+test('retries a temporary profile failure without loading a workspace early', async ({ page }) => {
+  const fixture = await installFixtures(page, { profileMode: 'temporary' });
+  await page.goto(`/home${TEAM_LEAVE_HASH}`, { waitUntil: 'domcontentloaded' });
+  await expect(widget(page).getByRole('heading', { name: 'Could not verify your HBHR account' })).toBeVisible();
+  expect(fixture.directoryRequests).toHaveLength(0);
+  await widget(page).getByRole('button', { name: 'Retry verification' }).click();
+  await expect(widget(page).getByRole('heading', { name: 'Team Leave', exact: true })).toBeVisible();
+  expect(fixture.profileRequests).toHaveLength(2);
+});
+
+test('blocks saved workspaces after authentication failure', async ({ page }) => {
+  const fixture = await installFixtures(page);
+  await openHome(page);
+  await createTeam(page, 'Before auth expiry');
+
+  fixture.setProfileMode('auth');
+  await page.evaluate(() => { location.hash = ''; });
+  await expect(widget(page)).toHaveCount(0);
+  await page.locator(NAV_SELECTOR).click();
+  await expect(widget(page).getByRole('heading', { name: 'Sign in required' })).toBeVisible();
+  await expect(widget(page).getByRole('combobox', { name: 'Team' })).toHaveCount(0);
+});
+
+test('keeps missing company identity on explicit manual fallback', async ({ page }) => {
+  const fixture = await installFixtures(page, { profileMode: 'missing-company' });
+  await page.goto(`/home${TEAM_LEAVE_HASH}`, { waitUntil: 'domcontentloaded' });
+  await expect(widget(page).getByRole('heading', { name: 'Account verification needs help' })).toBeVisible();
+  expect(fixture.directoryRequests).toHaveLength(0);
+  await widget(page).getByText('Use a manual workspace label').click();
+  await widget(page).getByLabel('Manual workspace label').fill('synthetic-account');
+  await widget(page).getByRole('button', { name: 'Open manual workspace' }).click();
+  await expect(widget(page).getByRole('heading', { name: 'Team Leave', exact: true })).toBeVisible();
+  expect(fixture.profileRequests).toHaveLength(1);
+});
+
+test('recovers a legacy workspace only after explicit acceptance', async ({ page }) => {
+  await installFixtures(page);
+  await seedExtensionStorage(page, { 'hbhr:workspace:hbhr:user:101': legacyWorkspaceFixture() });
+  await page.locator(NAV_SELECTOR).click();
+
+  await expect(widget(page).getByRole('heading', { name: 'Previous workspace found' })).toBeVisible();
+  await expect(widget(page).getByRole('option', { name: 'Legacy Platform (2)', exact: true })).toHaveCount(0);
+  await widget(page).getByRole('button', { name: 'Recover saved workspace' }).click();
+  await expect(widget(page).getByRole('option', { name: 'Legacy Platform (2)', exact: true })).toHaveCount(1);
+});
+
+test('keeps legacy workspace separate when recovery is refused', async ({ page }) => {
+  await installFixtures(page);
+  await seedExtensionStorage(page, { 'hbhr:workspace:hbhr:user:101': legacyWorkspaceFixture() });
+  await page.locator(NAV_SELECTOR).click();
+
+  await expect(widget(page).getByRole('heading', { name: 'Previous workspace found' })).toBeVisible();
+  await widget(page).getByRole('button', { name: 'Start empty workspace' }).click();
+  await expect(widget(page).getByRole('heading', { name: 'No team selected' })).toBeVisible();
+  await expect(widget(page).getByRole('option', { name: 'Legacy Platform (2)', exact: true })).toHaveCount(0);
 });
 
 test('matches native selected button state across navigation, reload and history', async ({ page }) => {
@@ -398,7 +581,7 @@ test('opens Team Leave from home without reloading the document', async ({ page 
 test('startup mask fails open when HBHR dashboard cannot be mounted', async ({ page }) => {
   await installFixtures(page);
   await page.route('https://app.hbhr.io/home', route => fulfill(route,
-    dashboardFixture('101').replace('class="user-dashboard-grid"', 'class="changed-dashboard"'), 'text/html'));
+    dashboardFixture().replace('class="user-dashboard-grid"', 'class="changed-dashboard"'), 'text/html'));
   await page.goto(`/home${TEAM_LEAVE_HASH}`, { waitUntil: 'domcontentloaded' });
   await expect(page.locator('.changed-dashboard')).toBeVisible({ timeout: 12000 });
   await expect(page.locator('html')).not.toHaveAttribute('data-hbhr-team-leave-loading', '');
@@ -460,10 +643,9 @@ test('mounts on home, not directory or login, and preserves native calendar', as
   await openHome(page);
 });
 
-test('opens automatically with mileage identity alone and persists groups after reload', async ({ page }) => {
-  await installFixtures(page, { mileageIdentityOnly: true });
+test('opens automatically from the authenticated profile and persists groups after reload', async ({ page }) => {
+  await installFixtures(page);
   await openHome(page);
-  await expect(page.locator(HOST_SELECTOR).getByText('Team Leave — select workspace')).toHaveCount(0);
   await createTeam(page, 'Platform');
   await page.reload({ waitUntil: 'domcontentloaded' });
   await expect(page).toHaveURL(/#hbhr-team-leave$/);
@@ -554,8 +736,8 @@ test('keeps last successful calendar visible when auth expires', async ({ page }
   await expect(approvedCell).toBeVisible();
 });
 
-test('remounts once after dashboard replacement and clears data across accounts', async ({ page }) => {
-  await installFixtures(page);
+test('remounts once after dashboard replacement and isolates company and account scopes', async ({ page }) => {
+  const fixture = await installFixtures(page, { companyId: '501' });
   await openHome(page);
   await createTeam(page, 'Account 101');
 
@@ -573,13 +755,16 @@ test('remounts once after dashboard replacement and clears data across accounts'
   await expect(widget(page).getByRole('grid', { name: /team leave timeline/i })).toBeVisible();
   await expect(page.locator('#user-calendar')).toHaveText('Replacement native calendar.');
 
-  await setAccountSignals(page, '202');
+  await switchAccount(page, fixture, '202', '501');
   await expect(widget(page).getByRole('heading', { name: 'No team selected' })).toBeVisible();
   await expect(widget(page).getByRole('combobox', { name: 'Team' })).toHaveValue('');
   await expect(widget(page).getByRole('option', { name: 'Account 101 (2)' })).toHaveCount(0);
   await expectStandaloneWidget(page);
 
-  await setAccountSignals(page, '101');
+  await switchAccount(page, fixture, '101', '502');
+  await expect(widget(page).getByRole('heading', { name: 'No team selected' })).toBeVisible();
+
+  await switchAccount(page, fixture, '101', '501');
   await expect(widget(page).getByRole('grid', { name: /team leave timeline/i })).toBeVisible();
   await expect(widget(page).getByRole('combobox', { name: 'Team' })).toContainText('Account 101 (2)');
   await expectStandaloneWidget(page);

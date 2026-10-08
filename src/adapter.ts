@@ -9,10 +9,38 @@ import {
 
 const DIRECTORY_PATH = '/people-directory';
 const CALENDAR_PATH = '/home/get-calendar';
+const PROFILE_PATH = '/user/settings/profile';
+const PROFILE_ORIGIN = 'https://app.hbhr.io';
 const REQUEST_TIMEOUT_MS = 10_000;
 const SAFE_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
+const PROFILE_ID_PATTERN = /^[1-9][0-9]{0,127}$/;
 
-class AdapterError extends Error {}
+export type AdapterErrorCode =
+  | 'authentication'
+  | 'network'
+  | 'timeout'
+  | 'server'
+  | 'profile-missing-company'
+  | 'profile-conflict'
+  | 'profile-unsupported'
+  | 'malformed';
+
+export class AdapterError extends Error {
+  readonly code: AdapterErrorCode;
+
+  constructor(message: string, code: AdapterErrorCode = 'malformed') {
+    super(message);
+    this.name = 'AdapterError';
+    this.code = code;
+  }
+}
+
+export interface AccountIdentity {
+  userId: string;
+  companyId: string;
+  scope: string;
+  source: 'authenticated-profile';
+}
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
@@ -451,72 +479,168 @@ export function parseCalendar(input: unknown, memberIds: string[]): CalendarResu
   return { leaves, holidays, warnings };
 }
 
-function currentUserIds(scriptText: string, scriptElement: HTMLScriptElement): Set<string> {
-  const ids = new Set<string>();
-  const currentContext = /\b(?:current[_\s-]?user|currentUser|logged[_\s-]?in[_\s-]?user|authenticated[_\s-]?user|current[_\s-]?account|currentAccount)\b/i;
-  const direct = /\b(?:current[_\s-]?user|logged[_\s-]?in[_\s-]?user|authenticated[_\s-]?user)(?:[_\s-]?id)?\s*[:=]\s*["']?(\d+)["']?/gi;
-  const objectProperty =
-    /["']?\b(?:current[_\s-]?user|logged[_\s-]?in[_\s-]?user|authenticated[_\s-]?user)\b["']?\s*(?:[:=])\s*\{[^{}]{0,500}?["']?\buser_id\b["']?\s*:\s*["'](\d+)["']/gi;
-  const elementContext = Array.from(scriptElement.attributes)
-    .map((attribute) => `${attribute.name}=${attribute.value}`)
-    .join(' ');
-
-  for (const match of scriptText.matchAll(direct)) {
-    ids.add(match[1]);
+function profileId(value: unknown, label: string): string {
+  const candidate =
+    typeof value === 'string'
+      ? value.trim()
+      : typeof value === 'number' && Number.isSafeInteger(value)
+        ? String(value)
+        : '';
+  if (!PROFILE_ID_PATTERN.test(candidate)) {
+    throw new AdapterError(`HBHR profile ${label} was invalid.`, 'profile-unsupported');
   }
-
-  // Verified HBHR mileage form embeds the signed-in user's ID explicitly.
-  if (scriptText.includes('/user/vehicle-rates')) {
-    for (const match of scriptText.matchAll(/\buser_id\s*:\s*["'](\d+)["']/g)) ids.add(match[1]);
-  }
-
-  for (const match of scriptText.matchAll(objectProperty)) {
-    ids.add(match[1]);
-  }
-
-  if (currentContext.test(scriptElement.id) || currentContext.test(elementContext)) {
-    const property = /\buser_id\s*[:=]\s*["'](\d+)["']/gi;
-    for (const match of scriptText.matchAll(property)) {
-      ids.add(match[1]);
-    }
-  }
-
-  return ids;
+  return candidate;
 }
 
-/**
- * HBHR does not expose a verified organisation identifier here. Scope uses the
- * verified user ID and must not be treated as globally unique across organisations.
- */
-export function detectAccount(document: Document): string | null {
-  const verifiedIds = new Set<string>();
-  const currentIds = new Set<string>();
-  const verifiedPattern = /\bevent\s*\.\s*event\s*\.\s*user_id\s*={2,3}\s*["'](\d+)["']/g;
-
-  for (const script of Array.from(document.scripts)) {
-    if (script.src) {
-      continue;
-    }
-
-    const text = script.textContent ?? '';
-    for (const match of text.matchAll(verifiedPattern)) {
-      verifiedIds.add(match[1]);
-    }
-    for (const id of currentUserIds(text, script)) {
-      currentIds.add(id);
-    }
-  }
-
-  // The calendar script is optional (e.g. hidden/native widget variants).
-  // A unique explicit current-user signal suffices; calendar IDs corroborate
-  // when present, but may never contradict the current-user identity.
-  if (verifiedIds.size > 1 || currentIds.size !== 1) {
+function profileFormPath(form: HTMLFormElement): string | null {
+  const action = form.getAttribute('action');
+  if (!action || /^\s*(?:javascript:|data:|mailto:)/i.test(action)) {
     return null;
   }
 
-  const [verifiedId] = verifiedIds;
-  const [currentId] = currentIds;
-  return verifiedIds.size === 0 || verifiedId === currentId ? `hbhr:user:${currentId}` : null;
+  try {
+    const url = new URL(action, `${PROFILE_ORIGIN}${PROFILE_PATH}`);
+    if (!['http:', 'https:'].includes(url.protocol) || url.origin !== PROFILE_ORIGIN) {
+      return null;
+    }
+    return url.pathname;
+  } catch {
+    return null;
+  }
+}
+
+function profileComponentMarker(element: Element): boolean {
+  const values = [
+    element.id,
+    element.getAttribute('class'),
+    element.getAttribute('wire:component'),
+    element.getAttribute('wire:name'),
+    element.getAttribute('data-component'),
+  ];
+  return values.some((value) => value?.split(/\s+/).includes('user-dbs-edit-form'));
+}
+
+function snapshotComponentName(value: unknown): string | null {
+  if (!isRecord(value) || !isRecord(value.memo) || typeof value.memo.name !== 'string') {
+    return null;
+  }
+  return value.memo.name;
+}
+
+function snapshotIdentityValue(value: unknown, label: string): string {
+  if (Array.isArray(value)) {
+    if (value.length !== 2 || !isRecord(value[1])) {
+      throw new AdapterError(`HBHR profile ${label} field was malformed.`, 'profile-unsupported');
+    }
+    return profileId(value[0], label);
+  }
+  return profileId(value, label);
+}
+
+function profileConflict(): never {
+  throw new AdapterError('HBHR profile identity conflicted.', 'profile-conflict');
+}
+
+function requireMatchingId(current: string | null, next: string): string {
+  if (current && current !== next) {
+    profileConflict();
+  }
+  return current ?? next;
+}
+
+function profileLoginHtml(html: string): boolean {
+  const document = new DOMParser().parseFromString(html, 'text/html');
+  if (Array.from(document.forms).some((form) => /(?:^|\/)login(?:[/?#]|$)/i.test(form.action))) {
+    return true;
+  }
+  const title = cleanText(document.querySelector('title')?.textContent).toLowerCase();
+  const body = cleanText(document.body?.textContent).toLowerCase();
+  return /\blog\s*in\b|\bsign\s*in\b/.test(title) && body.length < 20_000;
+}
+
+export function parseAccountProfile(html: string): AccountIdentity {
+  if (typeof html !== 'string') {
+    throw new AdapterError('HBHR profile response was not HTML.', 'profile-unsupported');
+  }
+
+  const document = new DOMParser().parseFromString(html, 'text/html');
+  const recognizedForms = Array.from(document.forms).filter((form) => {
+    const path = profileFormPath(form);
+    return path === '/user/settings/profile/work-details/update' || path === '/user/settings/profile/personal-details/update';
+  });
+  if (recognizedForms.length === 0) {
+    throw new AdapterError('HBHR profile forms were not found.', 'profile-unsupported');
+  }
+
+  let formUserId: string | null = null;
+  for (const form of recognizedForms) {
+    const inputs = Array.from(form.querySelectorAll<HTMLInputElement>('input[type="hidden"][name="id"]'));
+    if (inputs.length === 0) {
+      throw new AdapterError('HBHR profile user ID was missing.', 'profile-unsupported');
+    }
+    for (const input of inputs) {
+      formUserId = requireMatchingId(formUserId, profileId(input.value, 'user ID'));
+    }
+  }
+
+  const snapshots: Record<string, unknown>[] = [];
+  for (const element of Array.from(document.querySelectorAll('[wire\\:snapshot]'))) {
+    const raw = element.getAttribute('wire:snapshot');
+    if (!raw) {
+      if (profileComponentMarker(element)) {
+        throw new AdapterError('HBHR profile identity snapshot was missing.', 'profile-unsupported');
+      }
+      continue;
+    }
+
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(raw);
+    } catch {
+      if (profileComponentMarker(element)) {
+        throw new AdapterError('HBHR profile identity snapshot was malformed.', 'profile-unsupported');
+      }
+      continue;
+    }
+
+    if (profileComponentMarker(element) || snapshotComponentName(parsed) === 'user-dbs-edit-form') {
+      if (!isRecord(parsed)) {
+        throw new AdapterError('HBHR profile identity snapshot was malformed.', 'profile-unsupported');
+      }
+      snapshots.push(parsed);
+    }
+  }
+
+  if (snapshots.length === 0) {
+    throw new AdapterError('HBHR profile company identity was unavailable.', 'profile-missing-company');
+  }
+
+  let snapshotUserId: string | null = null;
+  let companyId: string | null = null;
+  for (const snapshot of snapshots) {
+    if (!isRecord(snapshot.data)) {
+      throw new AdapterError('HBHR profile identity data was malformed.', 'profile-unsupported');
+    }
+    if (!('user_id' in snapshot.data) || !('company_id' in snapshot.data)) {
+      throw new AdapterError('HBHR profile company identity was unavailable.', 'profile-missing-company');
+    }
+    snapshotUserId = requireMatchingId(snapshotUserId, snapshotIdentityValue(snapshot.data.user_id, 'user ID'));
+    companyId = requireMatchingId(companyId, snapshotIdentityValue(snapshot.data.company_id, 'company ID'));
+  }
+
+  if (!formUserId || !snapshotUserId || formUserId !== snapshotUserId) {
+    profileConflict();
+  }
+  if (!companyId) {
+    throw new AdapterError('HBHR profile company identity was unavailable.', 'profile-missing-company');
+  }
+
+  return {
+    userId: formUserId,
+    companyId,
+    scope: `hbhr:company:${companyId}:user:${formUserId}`,
+    source: 'authenticated-profile',
+  };
 }
 
 interface RequestSignal {
@@ -551,9 +675,9 @@ function responseIsAuthFailure(response: Response): boolean {
 
 function throwForResponse(response: Response): void {
   if (responseIsAuthFailure(response)) {
-    throw new AdapterError('Log into HBHR, then refresh.');
+    throw new AdapterError('Log into HBHR, then refresh.', 'authentication');
   }
-  throw new AdapterError(`HBHR request failed (${response.status}).`);
+  throw new AdapterError(`HBHR request failed (${response.status}).`, 'server');
 }
 
 function isLoginHtml(html: string): boolean {
@@ -579,6 +703,58 @@ export async function fetchDirectory(signal?: AbortSignal): Promise<Employee[]> 
       throw new AdapterError('Log into HBHR, then refresh.');
     }
     return parseDirectory(html);
+  } finally {
+    request.dispose();
+  }
+}
+
+export async function fetchAccountIdentity(signal?: AbortSignal): Promise<AccountIdentity> {
+  const request = boundedSignal(signal);
+  try {
+    let response: Response;
+    try {
+      response = await fetch(PROFILE_PATH, {
+        method: 'GET',
+        credentials: 'same-origin',
+        headers: { Accept: 'text/html' },
+        cache: 'no-store',
+        signal: request.signal,
+      });
+    } catch (error) {
+      if (request.signal.aborted && !signal?.aborted) {
+        throw new AdapterError('HBHR account verification timed out.', 'timeout');
+      }
+      throw new AdapterError('Could not verify the HBHR account.', 'network');
+    }
+
+    if (!response.ok) {
+      throwForResponse(response);
+    }
+    const finalUrl = response.url ? new URL(response.url, PROFILE_ORIGIN) : null;
+    if (!finalUrl || finalUrl.origin !== PROFILE_ORIGIN || finalUrl.pathname !== PROFILE_PATH) {
+      if (finalUrl && /\/login(?:[/?#]|$)/i.test(finalUrl.pathname)) {
+        throw new AdapterError('Log into HBHR, then refresh.', 'authentication');
+      }
+      throw new AdapterError('HBHR profile response URL was unexpected.', 'profile-unsupported');
+    }
+
+    const contentType = (response.headers?.get('content-type') ?? '').toLowerCase();
+    if (!contentType.includes('text/html')) {
+      throw new AdapterError('HBHR profile response was not HTML.', 'profile-unsupported');
+    }
+    const html = await response.text();
+    if (profileLoginHtml(html)) {
+      throw new AdapterError('Log into HBHR, then refresh.', 'authentication');
+    }
+    return parseAccountProfile(html);
+  } catch (error) {
+    if (error instanceof AdapterError) {
+      throw error;
+    }
+    if (request.signal.aborted && !signal?.aborted) {
+      throw new AdapterError('HBHR account verification timed out.', 'timeout');
+    }
+    throw new AdapterError('Could not verify the HBHR account.', 'network');
   } finally {
     request.dispose();
   }
